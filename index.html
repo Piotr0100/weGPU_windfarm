@@ -589,13 +589,19 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
               var cx = (mn.x + mx.x) / 2;
               var cy = (mn.y + mx.y) / 2;
               var cz = (mn.z + mx.z) / 2;
+              // Tightened: 12 m horizontal so adjacent turbines can't
+              // poach each other's blades when the farm is clustered.
               var hdist2 = (cx - hubX) * (cx - hubX) + (cz - hubZ) * (cz - hubZ);
-              if (hdist2 > 25 * 25) return false;
+              if (hdist2 > 12 * 12) return false;
               if (Math.abs(cy - hubY) > 15) return false;
               var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
               var dims = [xs, ys, zs].slice().sort(function (a, b) { return b - a; });
               return dims[0] > 10 && dims[2] < 3 && dims[0] / dims[2] > 5;
             });
+            console.log("[turbine-swap] " + tower.mesh.name +
+                        " hub=(" + hubX.toFixed(1) + "," + hubY.toFixed(1) + "," + hubZ.toFixed(1) +
+                        ") blades=" + blades.length +
+                        (blades.length ? " [" + blades.map(function (b) { return b.name; }).join(",") + "]" : ""));
             if (!blades.length) return;
             blades.forEach(function (b) { claimed[b.uniqueId] = 1; });
             var sumX = 0, sumY = 0, sumZ = 0;
