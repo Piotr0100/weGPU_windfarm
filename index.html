@@ -567,6 +567,45 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
                         "', y=[" + botLocal.toFixed(1) + "," + topLocal.toFixed(1) + "]");
           }
 
+          // ── Spin the rotors ──
+          // For each turbine: find its blade-shaped meshes (long + thin,
+          // near the tower top), reparent them under a fresh rotor
+          // TransformNode positioned at the hub, and advance the rotor's
+          // local rotation each frame so the blades sweep around the hub.
+          var rotors = [];
+          allTowers.forEach(function (tower) {
+            var tbi = tower.mesh.getBoundingInfo();
+            var hubX = (tbi.boundingBox.minimumWorld.x + tbi.boundingBox.maximumWorld.x) / 2;
+            var hubY = tbi.boundingBox.maximumWorld.y;
+            var hubZ = (tbi.boundingBox.minimumWorld.z + tbi.boundingBox.maximumWorld.z) / 2;
+            var blades = visibleMeshes.filter(function (mm) {
+              if (mm === tower.mesh) return false;
+              if (!mm.getTotalVertices || mm.getTotalVertices() === 0) return false;
+              var bi = mm.getBoundingInfo();
+              var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
+              var cx = (mn.x + mx.x) / 2, cz = (mn.z + mx.z) / 2;
+              var hdist2 = (cx - hubX) * (cx - hubX) + (cz - hubZ) * (cz - hubZ);
+              if (hdist2 > 30 * 30) return false;
+              var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
+              var dims = [xs, ys, zs].slice().sort(function (a, b) { return b - a; });
+              return dims[0] > 15 && dims[0] < 60 && dims[2] < 8 && dims[0] / dims[2] > 3;
+            });
+            if (!blades.length) return;
+            var rotor = new B.TransformNode("rotor_" + tower.mesh.name, scene);
+            rotor.parent = glbRoot;
+            rotor.setAbsolutePosition(new B.Vector3(hubX, hubY, hubZ));
+            blades.forEach(function (b) { b.setParent(rotor); });
+            rotors.push(rotor);
+          });
+          if (rotors.length) {
+            console.log("[turbine-swap] spinning " + rotors.length + " rotor(s)");
+            scene.onBeforeRenderObservable.add(function () {
+              var dt = scene.getEngine().getDeltaTime() / 1000;
+              var delta = dt * 0.6;  // ~6 RPM
+              for (var i = 0; i < rotors.length; i++) rotors[i].rotation.z += delta;
+            });
+          }
+
           console.log("[turbine-swap] loaded; raw height=" + height.toFixed(2) +
                       "m, scale=" + scale.toFixed(3) +
                       ", final y=" + glbRoot.position.y.toFixed(2));
