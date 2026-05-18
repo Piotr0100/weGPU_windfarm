@@ -1,0 +1,586 @@
+<!doctype html><html lang="pl"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"><title>ORLEN Baltic Power — Babylon.js WebGPU Tech Demo</title><style>@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+html,body{overflow:hidden;width:100%;height:100%;margin:0;padding:0;background:#0a1628;font-family:'Space Grotesk',system-ui,sans-serif}
+#renderCanvas{width:100%;height:100%;touch-action:none}
+#hud{position:absolute;top:0;left:0;right:0;padding:20px 24px;display:flex;justify-content:space-between;align-items:flex-start;pointer-events:none;z-index:10}
+.hud-left h1{font-size:20px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:0}
+.hud-left h1 span{color:#CC0000}
+.hud-left p{color:rgba(255,255,255,.4);font-size:10px;font-family:'JetBrains Mono',monospace;margin-top:2px;letter-spacing:1px}
+.hud-right{text-align:right}
+.badge{display:inline-block;padding:4px 12px;border-radius:16px;font-size:9px;font-weight:600;font-family:'JetBrains Mono',monospace;margin-left:4px}
+.b-gpu{background:rgba(139,92,246,.2);color:#A78BFA;border:1px solid rgba(139,92,246,.3)}
+.b-pbr{background:rgba(0,230,138,.15);color:#00E68A;border:1px solid rgba(0,230,138,.3)}
+.b-ue5{background:rgba(204,0,0,.15);color:#FF6B6B;border:1px solid rgba(204,0,0,.3)}
+.hud-right .info{color:rgba(255,255,255,.35);font-size:9px;margin-top:6px;font-family:'JetBrains Mono',monospace}
+#info-bar{position:absolute;bottom:0;left:0;right:0;padding:16px 24px 20px;background:linear-gradient(0deg,rgba(10,22,40,.92),transparent);pointer-events:none;z-index:10;text-align:center}
+#info-bar .hint{color:rgba(255,255,255,.3);font-size:11px}
+#info-bar .stats{display:flex;gap:32px;justify-content:center;margin-top:10px}
+.stat .val{color:#fff;font-size:22px;font-weight:700}
+.stat .label{color:rgba(255,255,255,.35);font-size:9px;font-family:'JetBrains Mono',monospace;margin-top:2px}
+#tooltip{position:absolute;display:none;max-width:300px;background:rgba(10,22,40,.95);backdrop-filter:blur(12px);border:1px solid rgba(139,92,246,.3);border-radius:12px;padding:16px 20px;z-index:20;pointer-events:none;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+#tt-title{color:#A78BFA;font-size:9px;font-weight:700;letter-spacing:2px;font-family:'JetBrains Mono',monospace;margin-bottom:4px}
+#tt-name{color:#fff;font-size:16px;font-weight:700;margin:0 0 8px}
+#tt-desc{color:rgba(255,255,255,.55);font-size:11px;line-height:1.6;margin:0 0 10px}
+.tt-specs{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.tt-spec{background:rgba(255,255,255,.05);border-radius:6px;padding:6px 10px}
+.tt-spec .sv{color:#fff;font-size:13px;font-weight:700}
+.tt-spec .sl{color:rgba(255,255,255,.35);font-size:8px;font-family:'JetBrains Mono',monospace;margin-top:1px}
+.enginious{position:absolute;bottom:20px;right:24px;z-index:10;pointer-events:none}
+.enginious span{color:rgba(255,255,255,.2);font-size:9px;font-family:'JetBrains Mono',monospace;letter-spacing:1px}</style><script>
+// Hide the dat.gui ocean controls panel as soon as it appears.
+setInterval(function () {
+  var g = document.getElementById("datGUI");
+  if (g) g.style.display = "none";
+  // dat.gui also injects a container with class "dg ac" — hide that too.
+  document.querySelectorAll(".dg.ac, .dg.main").forEach(function (el) {
+    el.style.display = "none";
+  });
+}, 200);
+</script>
+<script>
+// Shim: Chrome removed GPUAdapter.requestAdapterInfo() (now adapter.info getter).
+// Babylon 5.57 still calls the function form, so polyfill it.
+if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInfo) {
+  GPUAdapter.prototype.requestAdapterInfo = function () {
+    return Promise.resolve(this.info || {
+      vendor: "", architecture: "", device: "", description: ""
+    });
+  };
+}
+
+// Hotspot fix: the demo's built-in scene.onPointerMove handler doesn't fire
+// with a populated pickInfo in this Babylon build. Drive the tooltip from
+// here using onPointerObservable + a predicate restricted to hotspot meshes.
+(function () {
+  var HOTSPOTS = {
+    "hotspot_nacelle": {
+      title: "Gondola (Nacelle)",
+      description: "Obudowa generatora i przekładni na szczycie wieży. Mieści generator o mocy do 15 MW — wystarczającej dla 13 000 gospodarstw domowych.",
+      specs: [
+        { label: "MOC", value: "15 MW" },
+        { label: "WAGA", value: "600 ton" },
+        { label: "GENERATOR", value: "Direct Drive" },
+        { label: "DOMY", value: "13 000" }
+      ]
+    },
+    "hotspot_blades": {
+      title: "Łopaty wirnika",
+      description: "Trzy łopaty o długości 107m każda — dłuższe niż boisko piłkarskie. Wykonane z włókna szklanego wzmocnionego żywicą epoksydową.",
+      specs: [
+        { label: "DŁUGOŚĆ", value: "107 m" },
+        { label: "ROZPIĘTOŚĆ", value: "220 m" },
+        { label: "MATERIAŁ", value: "GRP/Epoxy" },
+        { label: "OBROTY", value: "6-12 RPM" }
+      ]
+    },
+    "hotspot_tower": {
+      title: "Wieża (Tower)",
+      description: "Stalowa wieża rurowa o wysokości 150m. Składa się z 4 sekcji transportowanych morskich i montowanych na miejscu.",
+      specs: [
+        { label: "WYSOKOŚĆ", value: "150 m" },
+        { label: "MATERIAŁ", value: "Stal S355" },
+        { label: "SEKCJE", value: "4 segmenty" },
+        { label: "WAGA", value: "1 200 ton" }
+      ]
+    },
+    "hotspot_foundation": {
+      title: "Fundament monopile",
+      description: "Stalowy monopile wbijany w dno morskie na głębokość 30-40m. Stanowi kotwiczenie całej konstrukcji na dnie Bałtyku.",
+      specs: [
+        { label: "GŁĘBOKOŚĆ", value: "30-40 m" },
+        { label: "ŚREDNICA", value: "8.5 m" },
+        { label: "TYP", value: "Monopile" },
+        { label: "ŻYWOTNOŚĆ", value: "25+ lat" }
+      ]
+    },
+    "hotspot_project": {
+      title: "Projekt Baltic Power",
+      description: "Wspólny projekt ORLEN i Northland Power. Farma 76 turbin na Bałtyku, 23 km od brzegu. Operacyjność planowana od 2026.",
+      specs: [
+        { label: "MOC FARMY", value: "1.2 GW" },
+        { label: "TURBINY", value: "76 szt." },
+        { label: "LOKALIZACJA", value: "Bałtyk, 23km" },
+        { label: "INWESTYCJA", value: "€4.7 mld" }
+      ]
+    }
+  };
+
+  var tip, canvas;
+  function dom() {
+    if (tip) return true;
+    canvas = document.getElementById("renderCanvas");
+    if (!canvas) return false;
+    // Build a fresh tooltip from scratch and parent it to <html>,
+    // not <body>, so nothing in the page's stacking contexts can hide it.
+    tip = document.createElement("div");
+    tip.id = "__hs_tip__";
+    tip.style.cssText =
+      "position:fixed;left:20px;top:20px;width:360px;min-height:80px;" +
+      "padding:14px 18px;background:rgba(10,22,40,0.95);color:#fff;" +
+      "border:1px solid rgba(167,139,250,0.4);border-radius:12px;" +
+      "font:14px/1.5 'Space Grotesk',system-ui,sans-serif;" +
+      "z-index:2147483647;display:none;pointer-events:none;" +
+      "box-shadow:0 8px 32px rgba(0,0,0,0.5);";
+    (document.documentElement || document.body).appendChild(tip);
+    return true;
+  }
+
+  function isHotspotMesh(m) {
+    return m && m.name && m.name.indexOf("hotspot_") === 0 && (typeof m.isEnabled !== "function" || m.isEnabled());
+  }
+
+  // Per-camera live capture: every frame, capture each camera's
+  // view*proj matrix at the moment it actually renders, so the picker
+  // can use the same matrix Babylon used (not a stale getter result).
+  var liveTransforms = {};  // sceneId+":"+camName -> { camName, m, rw, rh, t }
+  function attachCaptureHooks() {
+    var B = window.BABYLON;
+    var engines = B && B.EngineStore && B.EngineStore.Instances;
+    if (!engines) return;
+    for (var ei = 0; ei < engines.length; ei++) {
+      var engine = engines[ei];
+      var scenes = engine.scenes || [];
+      for (var si = 0; si < scenes.length; si++) {
+        var s = scenes[si];
+        if (s.__hsCaptureHooked) continue;
+        s.__hsCaptureHooked = true;
+        (function (scene, engine) {
+          scene.onBeforeCameraRenderObservable.add(function (cam) {
+            if (!cam) return;
+            var m = cam.getViewMatrix().multiply(cam.getProjectionMatrix());
+            liveTransforms[scene.uniqueId + ":" + cam.name] = {
+              sceneId: scene.uniqueId,
+              camName: cam.name,
+              m: m,
+              rw: engine.getRenderWidth(),
+              rh: engine.getRenderHeight(),
+              t: performance.now()
+            };
+          });
+        })(s, engine);
+      }
+    }
+  }
+  // Install the hook as soon as Babylon is loaded.
+  setInterval(attachCaptureHooks, 200);
+
+  function nearestHotspotByScreenDistance(cx_css, cy_css) {
+    attachCaptureHooks();
+    var B = window.BABYLON;
+    var engines = B && B.EngineStore && B.EngineStore.Instances;
+    if (!engines || !engines.length) return null;
+    var THRESHOLD_PX_CSS = 40;
+    var bestName = null;
+    var bestDist2 = THRESHOLD_PX_CSS * THRESHOLD_PX_CSS;
+    var rect = canvas.getBoundingClientRect();
+    for (var ei = 0; ei < engines.length; ei++) {
+      var engine = engines[ei];
+      var rw = engine.getRenderWidth();
+      var rh = engine.getRenderHeight();
+      var sx = rect.width  / rw;
+      var sy = rect.height / rh;
+      var scenes = engine.scenes || [];
+      for (var si = 0; si < scenes.length; si++) {
+        var scene = scenes[si];
+        // Try EVERY camera in the scene; pick whichever projects the
+        // hotspot to a position inside the canvas. The demo has a "debug"
+        // camera registered as activeCamera but the rendering camera is
+        // a different one in scene.cameras.
+        var camSet = {};
+        var cams = [];
+        function addCam(c) { if (c && !camSet[c.uniqueId]) { camSet[c.uniqueId] = 1; cams.push(c); } }
+        addCam(scene.activeCamera);
+        (scene.activeCameras || []).forEach(addCam);
+        (scene.cameras || []).forEach(addCam);
+
+        var transforms = [];
+        // Prefer live-captured matrices — one per camera that has rendered.
+        Object.keys(liveTransforms).forEach(function (k) {
+          var lt = liveTransforms[k];
+          if (lt.sceneId !== scene.uniqueId) return;
+          transforms.push({ name: "live:" + lt.camName, type: "live", m: lt.m });
+        });
+        // Fallbacks
+        for (var ci = 0; ci < cams.length; ci++) {
+          var c = cams[ci];
+          transforms.push({ name: c.name, type: c.getClassName && c.getClassName(),
+                            m: c.getViewMatrix().multiply(c.getProjectionMatrix()) });
+        }
+
+        var I = B.Matrix.Identity();
+        var viewport = new B.Viewport(0, 0, rw, rh);
+        for (var ti = 0; ti < transforms.length; ti++) {
+          var trDesc = transforms[ti];
+          for (var mi = 0; mi < scene.meshes.length; mi++) {
+            var m = scene.meshes[mi];
+            if (!isHotspotMesh(m)) continue;
+            var pos = m.getAbsolutePosition();
+            var p = B.Vector3.Project(pos, I, trDesc.m, viewport);
+            var inBounds = (p.z >= 0 && p.z <= 1 && p.x >= 0 && p.x <= rw && p.y >= 0 && p.y <= rh);
+            if (!inBounds) continue;
+            var px_css = p.x * sx;
+            var py_css = p.y * sy;
+            var dx = px_css - cx_css;
+            var dy = py_css - cy_css;
+            var d2 = dx * dx + dy * dy;
+            if (d2 < bestDist2) { bestDist2 = d2; bestName = m.name; }
+          }
+        }
+      }
+    }
+    return bestName;
+  }
+
+  function showTip(data, x, y) {
+    tip.innerHTML =
+      '<div style="color:#A78BFA;font-size:9px;font-weight:700;letter-spacing:2px;' +
+      'font-family:\'JetBrains Mono\',monospace;margin-bottom:4px">BALTIC POWER — ORLEN</div>' +
+      '<div style="color:#fff;font-size:16px;font-weight:700;margin:0 0 8px">' +
+      data.title + '</div>' +
+      '<div style="color:rgba(255,255,255,.7);font-size:11px;line-height:1.6;margin:0 0 10px">' +
+      data.description + '</div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">' +
+      data.specs.map(function (s) {
+        return '<div style="background:rgba(255,255,255,.06);border-radius:6px;padding:6px 10px">' +
+               '<div style="color:#fff;font-size:13px;font-weight:700">' + s.value + '</div>' +
+               '<div style="color:rgba(255,255,255,.4);font-size:8px;' +
+               'font-family:\'JetBrains Mono\',monospace;margin-top:1px">' + s.label + '</div>' +
+               '</div>';
+      }).join("") +
+      '</div>';
+    tip.style.display = "block";
+    tip.style.left = (x + 20) + "px";
+    tip.style.top  = (y - 20) + "px";
+    var r = tip.getBoundingClientRect();
+    if (r.right  > window.innerWidth)  tip.style.left = (x - r.width  - 20) + "px";
+    if (r.bottom > window.innerHeight) tip.style.top  = (y - r.height - 20) + "px";
+  }
+
+  var hideTimer = null;
+  function scheduleHide() {
+    if (hideTimer) return;
+    hideTimer = setTimeout(function () {
+      hideTimer = null;
+      tip.style.display = "none";
+      canvas.style.cursor = "default";
+    }, 350);
+  }
+  function cancelHide() {
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  }
+
+  function onMove(evt) {
+    if (!dom()) return;
+    var rect = canvas.getBoundingClientRect();
+    var cx = evt.clientX - rect.left;
+    var cy = evt.clientY - rect.top;
+    var name = nearestHotspotByScreenDistance(cx, cy);
+    if (name && HOTSPOTS[name]) {
+      cancelHide();
+      showTip(HOTSPOTS[name], evt.clientX, evt.clientY);
+      canvas.style.cursor = "pointer";
+    } else {
+      // Don't immediately hide — the dot's projection jitters as the
+      // user drags the camera, so allow brief misses to keep the
+      // tooltip visible.
+      scheduleHide();
+    }
+  }
+
+  var attached = false;
+  setInterval(function () {
+    if (attached) return;
+    if (!dom()) return;
+    // Capture phase on window so we run before Babylon's handlers.
+    window.addEventListener("pointermove", onMove, true);
+    window.addEventListener("pointerleave", function () {
+      if (tip) tip.style.display = "none";
+      if (canvas) canvas.style.cursor = "default";
+    }, true);
+    attached = true;
+    console.log("[hotspot-shim] attached window listener (capture)");
+  }, 250);
+})();
+
+// ── Turbine swap: replace procedural turbine with wind-turbine.glb,
+//    keep the round concrete platform but recolor it ORLEN red.
+(function () {
+  var done = false;
+
+  function unionBounds(meshes) {
+    var B = window.BABYLON;
+    var min = new B.Vector3( Infinity,  Infinity,  Infinity);
+    var max = new B.Vector3(-Infinity, -Infinity, -Infinity);
+    var any = false;
+    for (var i = 0; i < meshes.length; i++) {
+      var m = meshes[i];
+      if (!m.getTotalVertices || m.getTotalVertices() === 0) continue;
+      m.computeWorldMatrix(true);
+      m.refreshBoundingInfo();
+      var bi = m.getBoundingInfo();
+      min = B.Vector3.Minimize(min, bi.boundingBox.minimumWorld);
+      max = B.Vector3.Maximize(max, bi.boundingBox.maximumWorld);
+      any = true;
+    }
+    return any ? { min: min, max: max } : null;
+  }
+
+  function trySwap() {
+    if (done) return true;
+    var B = window.BABYLON;
+    if (!B || !B.SceneLoader || !B.EngineStore) return false;
+    var engines = B.EngineStore.Instances || [];
+    for (var ei = 0; ei < engines.length; ei++) {
+      var scenes = engines[ei].scenes || [];
+      for (var si = 0; si < scenes.length; si++) {
+        var scene = scenes[si];
+        var root = scene.getTransformNodeByName("turbineRoot");
+        if (!root) continue;
+
+        // Hide ALL procedural turbine parts including the platform / posts
+        // (the new GLB has its own foundation per turbine).
+        var procNames = ["tower", "nacelle", "hub", "blade0", "blade1", "blade2",
+                         "stripe", "platform"];
+        for (var pi = 0; pi < 12; pi++) procNames.push("post" + pi);
+        procNames.forEach(function (n) {
+          var m = scene.getMeshByName(n);
+          if (m) m.setEnabled(false);
+        });
+
+        done = true;
+        console.log("[turbine-swap] hid procedural turbine, loading offshore_wind_turbine.glb...");
+
+        B.SceneLoader.ImportMeshAsync("", "", "offshore_wind_turbine.glb", scene).then(function (res) {
+          var meshes = res.meshes;
+          // Find the import root (Babylon GLB loader injects "__root__")
+          var glbRoot = null;
+          for (var i = 0; i < meshes.length; i++) {
+            if (meshes[i].name === "__root__") { glbRoot = meshes[i]; break; }
+          }
+          if (!glbRoot) glbRoot = meshes[0];
+
+          // Recolor blue materials to ORLEN red.
+          // Collect unique materials from the imported meshes, plus res.materials.
+          var seen = new Set();
+          var mats = [];
+          (res.materials || []).forEach(function (m) {
+            if (m && !seen.has(m.uniqueId)) { seen.add(m.uniqueId); mats.push(m); }
+          });
+          meshes.forEach(function (m) {
+            var mm = m.material;
+            if (mm && !seen.has(mm.uniqueId)) { seen.add(mm.uniqueId); mats.push(mm); }
+            if (mm && mm.subMaterials) {
+              mm.subMaterials.forEach(function (sm) {
+                if (sm && !seen.has(sm.uniqueId)) { seen.add(sm.uniqueId); mats.push(sm); }
+              });
+            }
+          });
+
+          var ORLEN_RED = new B.Color3(0.80, 0.00, 0.00);
+
+          // Map material -> mesh names using it (helps identify the blue stripe).
+          var matMeshes = {};
+          meshes.forEach(function (m) {
+            if (m.material) {
+              (matMeshes[m.material.uniqueId] = matMeshes[m.material.uniqueId] || []).push(m.name);
+            }
+          });
+
+          window.__turbineMats = mats;  // for DevTools inspection
+
+          // Just print a numbered material table — no auto-recolor.
+          // User can run window.recolorMaterial("name") from DevTools to target one.
+          window.recolorMaterial = function (nameOrIndex, rgb) {
+            var color = new B.Color3(
+              rgb && rgb[0] != null ? rgb[0] : 0.80,
+              rgb && rgb[1] != null ? rgb[1] : 0.00,
+              rgb && rgb[2] != null ? rgb[2] : 0.00
+            );
+            var target = null;
+            if (typeof nameOrIndex === "number") target = mats[nameOrIndex];
+            else target = mats.find(function (m) { return m.name === nameOrIndex; });
+            if (!target) { console.warn("no material:", nameOrIndex); return; }
+            if ("albedoColor"  in target) target.albedoColor  = color;
+            if ("baseColor"    in target) target.baseColor    = color;
+            if ("diffuseColor" in target) target.diffuseColor = color;
+            console.log("recolored:", target.name);
+          };
+          console.log("[turbine-swap] GLB materials (run recolorMaterial(name) to paint one ORLEN red):");
+          mats.forEach(function (m, i) {
+            var c = m.albedoColor || m.baseColor || m.diffuseColor;
+            var col = c ? "rgb(" + c.r.toFixed(2) + "," + c.g.toFixed(2) + "," + c.b.toFixed(2) + ")" : "(no color)";
+            var tex = m.albedoTexture ? "[tex:" + (m.albedoTexture.name || "?") + "]" : "";
+            var used = (matMeshes[m.uniqueId] || []).join(",");
+            console.log("  [" + i + "] " + m.name + "  " + col + " " + tex + "  on: " + used);
+          });
+
+          // Helpers exposed for DevTools-driven trial and error.
+          window.hideMesh = function (name) {
+            var n = (name || "").toString();
+            var found = meshes.filter(function (mm) {
+              return mm.name === n || (mm.name && mm.name.indexOf(n) !== -1);
+            });
+            if (!found.length) { console.warn("no mesh matches:", n); return; }
+            found.forEach(function (mm) { mm.setEnabled(false); });
+            console.log("hid " + found.length + " mesh(es) matching '" + n + "'");
+          };
+          window.showMesh = function (name) {
+            var n = (name || "").toString();
+            var found = meshes.filter(function (mm) {
+              return mm.name === n || (mm.name && mm.name.indexOf(n) !== -1);
+            });
+            if (!found.length) { console.warn("no mesh matches:", n); return; }
+            found.forEach(function (mm) { mm.setEnabled(true); });
+            console.log("showed " + found.length + " mesh(es) matching '" + n + "'");
+          };
+          window.__turbineMeshes = meshes;
+
+          // Hide the ocean-floor cross-section + water plane baked into
+          // the GLB. We use three rules:
+          //   1. anything whose horizontal extent is >100 m (the slabs are 500m)
+          //   2. anything whose horizontal/vertical ratio is >5× AND wider than 1m
+          //   3. explicit name match for the known slab object ids
+          var hidden = [];
+          var EXPLICIT = { "Object_129": 1, "Object_131": 1 };
+          console.log("[turbine-swap] mesh inventory (use hideMesh('substring') / showMesh('substring')):");
+          meshes.forEach(function (mm) {
+            if (!mm || typeof mm.setEnabled !== "function") return;
+            var hasVerts = mm.getTotalVertices && mm.getTotalVertices() > 0;
+            if (!hasVerts) return;
+            mm.computeWorldMatrix(true);
+            mm.refreshBoundingInfo();
+            var bi = mm.getBoundingInfo();
+            var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
+            var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
+            // A slab is wide in BOTH horizontal axes; a blade is wide
+            // in only one. Require both >50 m to qualify.
+            var bothWide = xs > 50 && zs > 50;
+            var named    = !!EXPLICIT[mm.name];
+            var hide     = bothWide || named;
+            if (hide) {
+              mm.setEnabled(false);
+              mm.isVisible = false;
+              hidden.push(mm.name);
+            }
+            console.log("  " + (hide ? "[HIDE] " : "       ") + mm.name +
+              "  y=[" + mn.y.toFixed(2) + "," + mx.y.toFixed(2) + "]" +
+              "  size=(" + xs.toFixed(2) + "," + ys.toFixed(2) + "," + zs.toFixed(2) + ")");
+          });
+          console.log("[turbine-swap] auto-hid (slabs/oversized):", hidden);
+
+          // Measure bounds AFTER hiding so scale reflects turbines only.
+          var visible = meshes.filter(function (mm) { return mm.isEnabled(); });
+          var b0 = unionBounds(visible);
+          if (!b0) { console.warn("[turbine-swap] no visible geometry in GLB"); return; }
+          var height = b0.max.y - b0.min.y;
+          var scale = height > 0 ? 60 / height : 1;
+
+          // Parent under turbineRoot so it follows wave motion
+          glbRoot.parent = root;
+          glbRoot.scaling = new B.Vector3(scale, scale, scale);
+          // Force world matrix recompute before remeasuring
+          scene.render();  // single frame to flush transforms — cheap
+          var visibleMeshes = meshes.filter(function (mm) { return mm.isEnabled(); });
+          var b1 = unionBounds(visibleMeshes);
+          if (b1) {
+            var rootWorldY0 = root.getAbsolutePosition().y;
+            var localBottom = b1.min.y - rootWorldY0;
+            // Sink the turbine so the ladder/transition piece sits at
+            // roughly water level instead of perched on top of the old
+            // procedural platform.
+            glbRoot.position.y += (-6 - localBottom);
+          }
+          scene.render();  // flush transforms before recomputing bounds
+
+          // ── Re-anchor hotspots ──
+          // Collect every tower-shaped mesh (tall + narrow), sorted by
+          // distance from turbineRoot. The closest is the "central"
+          // turbine that the part-specific hotspots attach to; the
+          // closest pair defines the midpoint for the project hotspot.
+          var rootPos = root.getAbsolutePosition();
+          var allTowers = [];
+          visibleMeshes.forEach(function (mm) {
+            mm.computeWorldMatrix(true);
+            mm.refreshBoundingInfo();
+            var bi = mm.getBoundingInfo();
+            var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
+            var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
+            if (ys < 10 || xs > ys * 0.4 || zs > ys * 0.4) return;
+            var cx = (mn.x + mx.x) / 2, cz = (mn.z + mx.z) / 2;
+            var dx = cx - rootPos.x, dz = cz - rootPos.z;
+            allTowers.push({ mesh: mm, cx: cx, cz: cz, dist2: dx * dx + dz * dz });
+          });
+          allTowers.sort(function (a, b) { return a.dist2 - b.dist2; });
+          var towerCandidate = allTowers[0] ? allTowers[0].mesh : null;
+
+          if (towerCandidate) {
+            var tbi = towerCandidate.getBoundingInfo();
+            var tcx = (tbi.boundingBox.minimumWorld.x + tbi.boundingBox.maximumWorld.x) / 2;
+            var tcz = (tbi.boundingBox.minimumWorld.z + tbi.boundingBox.maximumWorld.z) / 2;
+
+            // Find every visible mesh whose horizontal center is within
+            // 12 m of the central tower — these are the parts of THIS
+            // turbine (base + tower + nacelle + blades). Union their
+            // bounds to get the true vertical extent (base→blade-tip).
+            var clusterMeshes = visibleMeshes.filter(function (mm) {
+              if (!mm.getTotalVertices || mm.getTotalVertices() === 0) return false;
+              var bi = mm.getBoundingInfo();
+              var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
+              var cx = (mn.x + mx.x) / 2, cz = (mn.z + mx.z) / 2;
+              var dx = cx - tcx, dz = cz - tcz;
+              return (dx * dx + dz * dz) < 144;  // 12 m radius
+            });
+            var bCluster = unionBounds(clusterMeshes);
+            if (!bCluster) bCluster = { min: tbi.boundingBox.minimumWorld,
+                                        max: tbi.boundingBox.maximumWorld };
+
+            var localX = tcx - rootPos.x;
+            var localZ = tcz - rootPos.z;
+            var topLocal = bCluster.max.y - rootPos.y;
+            var botLocal = bCluster.min.y - rootPos.y;
+            var h = topLocal - botLocal;
+
+            // Heights tuned so each dot lands on its referenced part:
+            //   foundation → yellow base (low, just above sea)
+            //   tower      → middle of the white tower
+            //   project    → lower-mid, off to the side as a generic info point
+            //   nacelle    → at the housing on top
+            //   blades     → just above the hub, at rotor height
+            // The project hotspot kept landing in front of the ocean
+            // settings GUI panel, so we drop it from the scene.
+            var projectMesh = scene.getMeshByName("hotspot_project");
+            if (projectMesh) projectMesh.setEnabled(false);
+
+            var anchors = {
+              "hotspot_foundation": [localX, botLocal + h * 0.20, localZ],
+              "hotspot_tower":      [localX, botLocal + h * 0.50, localZ],
+              "hotspot_nacelle":    [localX, botLocal + h * 0.82, localZ],
+              "hotspot_blades":     [localX, botLocal + h * 0.92, localZ]
+            };
+            Object.keys(anchors).forEach(function (name) {
+              var m = scene.getMeshByName(name);
+              if (!m) return;
+              var p = anchors[name];
+              m.position = new B.Vector3(p[0], p[1], p[2]);
+            });
+            console.log("[turbine-swap] anchored hotspots; cluster of " + clusterMeshes.length +
+                        " meshes around central tower '" + towerCandidate.name +
+                        "', y=[" + botLocal.toFixed(1) + "," + topLocal.toFixed(1) + "]");
+          }
+
+          console.log("[turbine-swap] loaded; raw height=" + height.toFixed(2) +
+                      "m, scale=" + scale.toFixed(3) +
+                      ", final y=" + glbRoot.position.y.toFixed(2));
+        }).catch(function (e) {
+          console.error("[turbine-swap] failed to load GLB:", e);
+        });
+        return true;
+      }
+    }
+    return false;
+  }
+
+  var swapInterval = setInterval(function () {
+    if (trySwap()) clearInterval(swapInterval);
+  }, 250);
+})();
+</script><script defer="defer" src="ocean.fd2b7e76b3a452270b86.js"></script></head><body><canvas id="renderCanvas" touch-action="none"></canvas><div id="hud"><div class="hud-left"><h1><span>ORLEN</span> Baltic Power</h1><p>OFFSHORE WIND FARM — WEBGPU TECH DEMO</p></div><div class="hud-right"><span class="badge b-gpu">WebGPU</span> <span class="badge b-pbr">PBR Materials</span> <span class="badge b-ue5">UE5-Ready Assets</span><div class="info">Babylon.js 9 · FFT Ocean · Compute Shaders</div></div></div><div id="info-bar"><div class="hint">Najedź na czerwone punkty, aby zobaczyć specyfikację techniczną · WASD + mysz aby eksplorować</div><div class="stats"><div class="stat"><div class="val">1.2 GW</div><div class="label">MOC FARMY</div></div><div class="stat"><div class="val">76</div><div class="label">TURBIN</div></div><div class="stat"><div class="val">23 km</div><div class="label">OD BRZEGU</div></div><div class="stat"><div class="val">€4.7 mld</div><div class="label">INWESTYCJA</div></div></div></div><div id="tooltip"><div id="tt-title"></div><h3 id="tt-name"></h3><p id="tt-desc"></p><div class="tt-specs" id="tt-specs"></div></div><div class="enginious"><span>ENGINIOUS GROUP S.A. · TECH DEMO · 2025</span></div></body></html>

@@ -1,0 +1,14 @@
+# Source maps (bundle is from a public Babylon demo; maps inflate repo size)
+*.map
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Vercel local state
+.vercel/
+
+# Node (if anyone ever adds tooling)
+node_modules/
