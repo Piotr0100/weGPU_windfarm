@@ -583,12 +583,19 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
               if (!mm.getTotalVertices || mm.getTotalVertices() === 0) return false;
               var bi = mm.getBoundingInfo();
               var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
-              var cx = (mn.x + mx.x) / 2, cz = (mn.z + mx.z) / 2;
+              var cx = (mn.x + mx.x) / 2;
+              var cy = (mn.y + mx.y) / 2;
+              var cz = (mn.z + mx.z) / 2;
+              // Within horizontal radius of the hub
               var hdist2 = (cx - hubX) * (cx - hubX) + (cz - hubZ) * (cz - hubZ);
               if (hdist2 > 30 * 30) return false;
+              // Must sit AT the hub's height — excludes the tower whose
+              // center is mid-height, well below the hub.
+              if (Math.abs(cy - hubY) > 12) return false;
               var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
               var dims = [xs, ys, zs].slice().sort(function (a, b) { return b - a; });
-              return dims[0] > 15 && dims[0] < 60 && dims[2] < 8 && dims[0] / dims[2] > 3;
+              // Long-and-thin: longest dim much bigger than shortest
+              return dims[0] > 5 && dims[2] < 8 && dims[0] / dims[2] > 2.5;
             });
             if (!blades.length) return;
             var rotor = new B.TransformNode("rotor_" + tower.mesh.name, scene);
