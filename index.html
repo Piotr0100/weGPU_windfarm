@@ -568,41 +568,66 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
           }
 
           // ── Spin the rotors ──
-          // For each turbine: find its blade-shaped meshes (long + thin,
-          // near the tower top), reparent them under a fresh rotor
-          // TransformNode positioned at the hub, and advance the rotor's
-          // local rotation each frame so the blades sweep around the hub.
+          // 1) Collect every blade-shaped mesh in the scene (long + thin).
+          // 2) Assign each blade to its single CLOSEST tower hub so a
+          //    blade can never be claimed by two rotors.
+          // 3) For each tower with blades, create a rotor TransformNode
+          //    at the blade-centroid (the true rotor axis) and parent
+          //    only that tower's blades to it.
+          var towerMeshSet = {};
+          allTowers.forEach(function (t) { towerMeshSet[t.mesh.uniqueId] = 1; });
+
+          var allBlades = visibleMeshes.filter(function (mm) {
+            if (towerMeshSet[mm.uniqueId]) return false;
+            if (!mm.getTotalVertices || mm.getTotalVertices() === 0) return false;
+            var bi = mm.getBoundingInfo();
+            var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
+            var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
+            var dims = [xs, ys, zs].slice().sort(function (a, b) { return b - a; });
+            return dims[0] > 10 && dims[2] < 3 && dims[0] / dims[2] > 5;
+          });
+
+          // Pre-compute each tower's hub world position once
+          var hubs = allTowers.map(function (t) {
+            var bi = t.mesh.getBoundingInfo();
+            return {
+              x: (bi.boundingBox.minimumWorld.x + bi.boundingBox.maximumWorld.x) / 2,
+              y: bi.boundingBox.maximumWorld.y,
+              z: (bi.boundingBox.minimumWorld.z + bi.boundingBox.maximumWorld.z) / 2
+            };
+          });
+
+          // Assign every blade to its closest tower (within 40 m max)
+          var bladesPerTower = {};
+          allBlades.forEach(function (b) {
+            var bi = b.getBoundingInfo();
+            var bx = (bi.boundingBox.minimumWorld.x + bi.boundingBox.maximumWorld.x) / 2;
+            var by = (bi.boundingBox.minimumWorld.y + bi.boundingBox.maximumWorld.y) / 2;
+            var bz = (bi.boundingBox.minimumWorld.z + bi.boundingBox.maximumWorld.z) / 2;
+            var bestIdx = -1, bestD2 = 40 * 40;
+            for (var i = 0; i < hubs.length; i++) {
+              var dx = bx - hubs[i].x, dy = by - hubs[i].y, dz = bz - hubs[i].z;
+              var d2 = dx * dx + dy * dy + dz * dz;
+              if (d2 < bestD2) { bestD2 = d2; bestIdx = i; }
+            }
+            if (bestIdx >= 0) {
+              (bladesPerTower[bestIdx] = bladesPerTower[bestIdx] || []).push(b);
+            }
+          });
+
           var rotors = [];
-          allTowers.forEach(function (tower) {
-            var tbi = tower.mesh.getBoundingInfo();
-            var hubX = (tbi.boundingBox.minimumWorld.x + tbi.boundingBox.maximumWorld.x) / 2;
-            var hubY = tbi.boundingBox.maximumWorld.y;
-            var hubZ = (tbi.boundingBox.minimumWorld.z + tbi.boundingBox.maximumWorld.z) / 2;
-            var blades = visibleMeshes.filter(function (mm) {
-              if (mm === tower.mesh) return false;
-              if (!mm.getTotalVertices || mm.getTotalVertices() === 0) return false;
-              var bi = mm.getBoundingInfo();
-              var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
-              var cx = (mn.x + mx.x) / 2;
-              var cy = (mn.y + mx.y) / 2;
-              var cz = (mn.z + mx.z) / 2;
-              // Within horizontal radius of the hub
-              var hdist2 = (cx - hubX) * (cx - hubX) + (cz - hubZ) * (cz - hubZ);
-              if (hdist2 > 30 * 30) return false;
-              // Must sit AT the hub's height — excludes the tower whose
-              // center is mid-height, well below the hub.
-              if (Math.abs(cy - hubY) > 12) return false;
-              var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
-              var dims = [xs, ys, zs].slice().sort(function (a, b) { return b - a; });
-              // Blades are MUCH skinnier than nacelles/hubs. Nacelle is
-              // ~8×3×3 (ratio 2.8); blade is ~16×1.5×1.5 (ratio 10+).
-              return dims[0] > 10 && dims[2] < 3 && dims[0] / dims[2] > 5;
-            });
-            if (!blades.length) return;
-            // The true rotor center is the centroid of the three blade
-            // centers. Blades at 120° apart cancel out, leaving the hub
-            // center — much more accurate than the tower-top point and
-            // it stops the blade roots from tracing a small orbit.
+          Object.keys(bladesPerTower).forEach(function (idxStr) {
+            var idx = +idxStr;
+            var tower = allTowers[idx];
+            var blades = bladesPerTower[idx];
+            // Skip rotors that only got a single blade — their "centroid"
+            // would equal that blade's own center, making it spin in
+            // place around itself. Better to leave it static.
+            if (blades.length < 2) {
+              console.log("[turbine-swap] " + tower.mesh.name +
+                          " only got " + blades.length + " blade — skipping rotor");
+              return;
+            }
             var sumX = 0, sumY = 0, sumZ = 0;
             blades.forEach(function (b) {
               var bi = b.getBoundingInfo();
@@ -613,9 +638,9 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
             var rotorX = sumX / blades.length;
             var rotorY = sumY / blades.length;
             var rotorZ = sumZ / blades.length;
-            console.log("[turbine-swap] " + tower.mesh.name + " blades:",
-                        blades.map(function (b) { return b.name; }),
-                        "rotor=(" + rotorX.toFixed(1) + "," + rotorY.toFixed(1) + "," + rotorZ.toFixed(1) + ")");
+            console.log("[turbine-swap] " + tower.mesh.name + " gets " + blades.length +
+                        " blade(s): " + blades.map(function (b) { return b.name; }).join(",") +
+                        "  rotor=(" + rotorX.toFixed(1) + "," + rotorY.toFixed(1) + "," + rotorZ.toFixed(1) + ")");
             var rotor = new B.TransformNode("rotor_" + tower.mesh.name, scene);
             rotor.parent = glbRoot;
             rotor.setAbsolutePosition(new B.Vector3(rotorX, rotorY, rotorZ));
