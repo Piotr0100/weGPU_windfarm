@@ -504,7 +504,14 @@ if (typeof GPUAdapter !== "undefined" && !GPUAdapter.prototype.requestAdapterInf
             var bi = mm.getBoundingInfo();
             var mn = bi.boundingBox.minimumWorld, mx = bi.boundingBox.maximumWorld;
             var xs = mx.x - mn.x, ys = mx.y - mn.y, zs = mx.z - mn.z;
-            if (ys < 10 || xs > ys * 0.4 || zs > ys * 0.4) return;
+            // Real towers are tall round cylinders: tall (ys ≥ 20 — excludes
+            // foundations at 10 m), narrow (xs/zs ≤ ys×0.4), AND have a
+            // square-ish cross-section (xs ≈ zs). The third check is what
+            // excludes long-and-thin blade meshes that happened to be in a
+            // vertical orientation and squeaked under the narrowness rule.
+            if (ys < 20) return;
+            if (xs > ys * 0.4 || zs > ys * 0.4) return;
+            if (Math.max(xs, zs) / Math.max(0.01, Math.min(xs, zs)) > 1.5) return;
             var cx = (mn.x + mx.x) / 2, cz = (mn.z + mx.z) / 2;
             var dx = cx - rootPos.x, dz = cz - rootPos.z;
             allTowers.push({ mesh: mm, cx: cx, cz: cz, dist2: dx * dx + dz * dz });
